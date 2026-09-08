@@ -10,7 +10,7 @@ pub const op_build_tsrequest: u32 = 4;
 pub const op_classify_spnego: u32 = 5;
 pub const op_build_spnego_neg_token_resp: u32 = 6;
 pub const op_ntlmv2_profile: u32 = 7;
-pub const op_validate_fixed_credentials: u32 = 8;
+pub const op_validate_config: u32 = 8;
 pub const op_error_contract: u32 = 9;
 pub const op_credssp_state_contract: u32 = 10;
 pub const op_credssp_process_state: u32 = 11;
@@ -37,12 +37,14 @@ pub const auth_result_bad_pubkeyauth: i32 = -24;
 pub const auth_result_bad_state: i32 = -25;
 pub const auth_result_unsupported_ntlm: i32 = -26;
 pub const auth_result_entropy_unavailable: i32 = -27;
+pub const auth_result_bad_config: i32 = -28;
 
-const fixed_user = "r4os";
-const fixed_user_upper = "R4OS";
-const fixed_password = "rosebud";
-const fixed_target = "R4OS";
-const fixed_workstation = "R4OS";
+// Legacy diagnostic fixtures only; the owned session engine uses caller configuration.
+const fixture_user = "r4os";
+const fixture_user_upper = "R4OS";
+const fixture_password = "rosebud";
+const fixture_target = "R4OS";
+const fixture_workstation = "R4OS";
 const tsrequest_version: u8 = 2;
 const tsrequest_max_supported_version: u8 = 6;
 const der_tag_sequence: u8 = 0x30;
@@ -146,26 +148,26 @@ export fn r4auth_query(out: *r4os.abi.ProtocolStatus) callconv(.c) i32 {
 export fn r4auth_dispatch(op: u32, in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) callconv(.c) i32 {
     out_buffer.len = 0;
     return switch (op) {
-        op_capabilities => writeOut(out_buffer, "role=security.credssp;stage=credssp-live-state;depends=security.tls;auth=fixed-single-user;kerberos=no;domain=no;ops=tsrequest,spnego,ntlmv2,pubkeyauth,state,windows-harness,live-state"),
+        op_capabilities => writeOut(out_buffer, "role=security.credssp;stage=credssp-owned-session;depends=security.tls;auth=configured-single-user;kerberos=no;domain=no;ops=tsrequest,spnego,ntlmv2,pubkeyauth,state,windows-harness,live-state"),
         op_classify_tsrequest => classifyTsRequest(in_buffer, out_buffer),
         op_selftest => selftest(out_buffer),
         op_build_tsrequest => buildTsRequest(in_buffer, out_buffer),
         op_classify_spnego => classifySpnego(in_buffer, out_buffer),
         op_build_spnego_neg_token_resp => buildSpnegoNegTokenResp(in_buffer, out_buffer),
         op_ntlmv2_profile => describeNtlmv2Profile(in_buffer, out_buffer),
-        op_validate_fixed_credentials => validateFixedCredentials(in_buffer, out_buffer),
+        op_validate_config => validateSessionConfig(in_buffer, out_buffer),
         op_error_contract => describeErrorContract(in_buffer, out_buffer),
         op_credssp_state_contract => describeCredsspStateContract(in_buffer, out_buffer),
-        op_credssp_process_state => processCredsspState(in_buffer, out_buffer),
+        op_credssp_process_state => auth_result_unsupported_ntlm,
         op_credssp_build_challenge => buildCredsspChallenge(in_buffer, out_buffer),
         op_credssp_build_authenticate_fixture => buildCredsspAuthenticateFixture(in_buffer, out_buffer),
         op_credssp_build_pubkeyauth_fixture => buildCredsspPubKeyAuthFixture(in_buffer, out_buffer),
         op_credssp_windows_contract => describeCredsspWindowsContract(in_buffer, out_buffer),
-        op_credssp_process_windows_state => processCredsspWindowsState(in_buffer, out_buffer),
+        op_credssp_process_windows_state => auth_result_unsupported_ntlm,
         op_credssp_windows_harness => credsspWindowsHarnessDispatch(in_buffer, out_buffer),
         op_credssp_live_contract => describeCredsspLiveContract(in_buffer, out_buffer),
-        op_credssp_process_live_state => processCredsspLiveState(in_buffer, out_buffer),
-        op_credssp_begin_session => beginCredsspSession(out_buffer),
+        op_credssp_process_live_state => processOwnedCredsspSession(in_buffer, out_buffer),
+        op_credssp_begin_session => beginOwnedCredsspSession(in_buffer, out_buffer),
         op_credssp_live_harness => credsspLiveHarnessDispatch(in_buffer, out_buffer),
         else => -4,
     };
@@ -242,13 +244,13 @@ fn buildSpnegoNegTokenResp(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer
 
 fn describeNtlmv2Profile(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     _ = in_buffer;
-    const profile = ntlmv2FixedProfile();
+    const profile = ntlmv2FixtureProfile();
     var text: [512]u8 = .{0} ** 512;
     var pos: usize = 0;
-    appendText(text[0..], &pos, "ntlmv2-profile;user=");
-    appendText(text[0..], &pos, fixed_user);
+    appendText(text[0..], &pos, "ntlmv2-profile;scope=diagnostic-only;user=");
+    appendText(text[0..], &pos, fixture_user);
     appendText(text[0..], &pos, ";target=");
-    appendText(text[0..], &pos, fixed_target);
+    appendText(text[0..], &pos, fixture_target);
     appendText(text[0..], &pos, ";password=fixed");
     appendText(text[0..], &pos, ";auth_model=fixed-single-user");
     appendText(text[0..], &pos, ";kerberos=no;domain=no;permissions=none");
@@ -265,31 +267,31 @@ fn describeNtlmv2Profile(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: 
     return writeOut(out_buffer, text[0..pos]);
 }
 
-fn validateFixedCredentials(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+fn validateFixtureCredentials(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
     if (fieldEquals(input, "mech", "kerberos")) return auth_result_unsupported_kerberos;
     if (!fieldEquals(input, "tls", "protected")) return auth_result_missing_tls_context;
     if (fieldHasUnsupportedDomain(input)) return auth_result_unsupported_domain;
-    if (!fieldEquals(input, "user", fixed_user)) return auth_result_bad_password;
-    if (!fieldEquals(input, "password", fixed_password)) return auth_result_bad_password;
+    if (!fieldEquals(input, "user", fixture_user)) return auth_result_bad_password;
+    if (!fieldEquals(input, "password", fixture_password)) return auth_result_bad_password;
     return writeOut(out_buffer, "auth;result=ok;user=r4os;auth_model=fixed-single-user;permissions=none");
 }
 
 fn describeErrorContract(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     _ = in_buffer;
-    return writeOut(out_buffer, "credssp-errors;bad_password=-20;bad_token=-6;unsupported_kerberos=-21;unsupported_domain=-22;missing_tls_context=-23;bad_pubkeyauth=-24;bad_state=-25;unsupported_ntlm=-26;auth_model=fixed-single-user;user=r4os;password=rosebud;permissions=none");
+    return writeOut(out_buffer, "credssp-errors;bad_password=-20;bad_token=-6;unsupported_kerberos=-21;unsupported_domain=-22;missing_tls_context=-23;bad_pubkeyauth=-24;bad_state=-25;unsupported_ntlm=-26;entropy_unavailable=-27;bad_config=-28;auth_model=configured-single-user;permissions=none");
 }
 
 fn describeCredsspStateContract(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     _ = in_buffer;
     var text: [896]u8 = .{0} ** 896;
     var pos: usize = 0;
-    appendText(text[0..], &pos, "credssp-state-machine;input=R4S2+phase+tls+reserved+challenge8+TSRequest");
+    appendText(text[0..], &pos, "credssp-state-machine;scope=diagnostic-only;acceptance_op11=unsupported;input=R4S2+phase+tls+reserved+challenge8+TSRequest");
     appendText(text[0..], &pos, ";phases=1:negotiate,2:authenticate,3:pubkeyauth");
     appendText(text[0..], &pos, ";tsrequest_versions=2..6");
     appendText(text[0..], &pos, ";tls_required=yes");
     appendText(text[0..], &pos, ";mech=ntlmv2");
-    appendText(text[0..], &pos, ";session=op21:hardware-challenge8;challenge=op12(session8);entropy_unavailable=-27");
+    appendText(text[0..], &pos, ";challenge=op12(caller-challenge8);productive_contract=op18");
     appendText(text[0..], &pos, ";authenticate_fixture=op13");
     appendText(text[0..], &pos, ";pubkeyauth_fixture=op14");
     appendText(text[0..], &pos, ";pubkeyauth=hmac-md5(ntowfv2,tls_pubkey_hash+credssp-binding)");
@@ -309,7 +311,7 @@ fn describeCredsspWindowsContract(in_buffer: *const r4os.abi.ProtocolBuffer, out
     _ = in_buffer;
     var text: [1024]u8 = .{0} ** 1024;
     var pos: usize = 0;
-    appendText(text[0..], &pos, "credssp-windows-contract");
+    appendText(text[0..], &pos, "credssp-windows-contract;scope=diagnostic-only;acceptance_op16=unsupported");
     appendText(text[0..], &pos, ";input=R4W2+phase+tls+variant+reserved+tls_pubkey_hash32+challenge8+TSRequest");
     appendText(text[0..], &pos, ";ops=op15:contract,op16:process,op17:harness");
     appendText(text[0..], &pos, ";phases=1:negotiate,2:authenticate,3:pubkeyauth");
@@ -328,31 +330,10 @@ fn describeCredsspWindowsContract(in_buffer: *const r4os.abi.ProtocolBuffer, out
 
 fn describeCredsspLiveContract(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     _ = in_buffer;
-    var text: [1280]u8 = .{0} ** 1280;
-    var pos: usize = 0;
-    appendText(text[0..], &pos, "credssp-live-contract");
-    appendText(text[0..], &pos, ";input=R4C2+phase+variant+flags+reserved+stream_len+challenge8+R4LK+TSRequest");
-    appendText(text[0..], &pos, ";ops=op18:contract,op19:process,op20:harness");
-    appendText(text[0..], &pos, ";stream_state=R4LK");
-    appendText(text[0..], &pos, ";stream_len=");
-    appendU64(text[0..], &pos, tls12_live_stream_state_len);
-    appendText(text[0..], &pos, ";tls_required=yes");
-    appendText(text[0..], &pos, ";tls_pubkey_hash=R4LK[-32]");
-    appendText(text[0..], &pos, ";phases=1:negotiate,2:authenticate,3:pubkeyauth");
-    appendText(text[0..], &pos, ";spnego=windows-negTokenInit+negTokenResp");
-    appendText(text[0..], &pos, ";ntlm=type1,type2,type3");
-    appendText(text[0..], &pos, ";pubkeyauth=hmac-md5(ntowfv2,r4lk_pubkey_hash+windows-binding)");
-    appendText(text[0..], &pos, ";windows_final=authInfo+pubKeyAuth");
-    appendText(text[0..], &pos, ";resume=yes");
-    appendText(text[0..], &pos, ";kerberos=blocked:-21");
-    appendText(text[0..], &pos, ";domain=blocked:-22");
-    appendText(text[0..], &pos, ";bad_password=-20;bad_pubkeyauth=-24;bad_tsrequest=-6;missing_tls=-23;bad_state=-25;unsupported_ntlm=-26");
-    appendText(text[0..], &pos, ";user=r4os;password=rosebud;permissions=none");
-    appendText(text[0..], &pos, ";rdpsvc=consumer-only;next=rdpsvc-credssp-loop");
-    return writeOut(out_buffer, text[0..pos]);
+    return writeOut(out_buffer, "credssp-live-contract;input=R4C3;reply=R4AO;begin=op21:R4AI;step=op19;config=op8:R4AC;credentials=configured;proof=ntlmv2-ess128;tls_binding=subject-public-key;tls_required=yes;stream_state=R4LK;phases=negotiate,authenticate,credentials,complete;legacy_acceptance=unsupported;fixture_ops=3,7,13,14,17,20;rdpsvc=consumer-only");
 }
 
-fn processCredsspState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+fn processCredsspFixtureState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
     const frame = parseCredsspStateFrame(input) orelse return auth_result_bad_state;
     if (!frame.tls_protected) return auth_result_missing_tls_context;
@@ -368,7 +349,7 @@ fn processCredsspState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r
     };
 }
 
-fn processCredsspWindowsState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+fn processCredsspWindowsFixtureState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
     const frame = parseCredsspWindowsStateFrame(input) orelse return auth_result_bad_state;
     if (!frame.tls_protected) return auth_result_missing_tls_context;
@@ -385,7 +366,7 @@ fn processCredsspWindowsState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buf
     };
 }
 
-fn processCredsspLiveState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+fn processCredsspLiveFixtureState(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
     const frame = parseCredsspLiveStateFrame(input) orelse return auth_result_bad_state;
     if (!frame.tls_protected) return auth_result_missing_tls_context;
@@ -547,7 +528,7 @@ fn runCredsspWindowsHarness(result: *CredsspWindowsHarnessResult) i32 {
     var state_text: [512]u8 = .{0} ** 512;
     var state_out = r4os.abi.ProtocolBuffer{ .data = &state_text, .len = 0, .capacity = state_text.len };
     var state_in = r4os.abi.ProtocolBuffer{ .data = &negotiate_frame, .len = @intCast(negotiate_frame_len), .capacity = negotiate_frame.len };
-    if (processCredsspWindowsState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     if (!contains(state_text[0..@intCast(state_out.len)], "phase=negotiate")) return auth_result_bad_state;
 
     const mixed_oids = [_][]const u8{ oid_kerberos[0..], oid_ntlmssp[0..] };
@@ -558,7 +539,7 @@ fn runCredsspWindowsHarness(result: *CredsspWindowsHarnessResult) i32 {
     var mixed_frame: [384]u8 = .{0} ** 384;
     const mixed_frame_len = buildCredsspWindowsStateFrame(fixture_server_challenge, mixed_frame[0..], credssp_phase_negotiate, true, credssp_windows_variant_ntlm, windows_tls_pubkey_hash[0..], mixed_ts[0..mixed_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &mixed_frame, .len = @intCast(mixed_frame_len), .capacity = mixed_frame.len };
-    if (processCredsspWindowsState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     const mixed_state = state_text[0..@intCast(state_out.len)];
     if (!contains(mixed_state, "phase=negotiate") or !contains(mixed_state, "ntlm_type=1")) return auth_result_bad_state;
 
@@ -577,7 +558,7 @@ fn runCredsspWindowsHarness(result: *CredsspWindowsHarnessResult) i32 {
     var authenticate_frame: [640]u8 = .{0} ** 640;
     const authenticate_frame_len = buildCredsspWindowsStateFrame(fixture_server_challenge, authenticate_frame[0..], credssp_phase_authenticate, true, credssp_windows_variant_ntlm, windows_tls_pubkey_hash[0..], authenticate_ts[0..authenticate_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &authenticate_frame, .len = @intCast(authenticate_frame_len), .capacity = authenticate_frame.len };
-    if (processCredsspWindowsState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     if (!contains(state_text[0..@intCast(state_out.len)], "phase=authenticate")) return auth_result_bad_state;
 
     var pubkeyauth: [16]u8 = undefined;
@@ -587,14 +568,14 @@ fn runCredsspWindowsHarness(result: *CredsspWindowsHarnessResult) i32 {
     var pubkey_frame: [192]u8 = .{0} ** 192;
     const pubkey_frame_len = buildCredsspWindowsStateFrame(fixture_server_challenge, pubkey_frame[0..], credssp_phase_pubkeyauth, true, credssp_windows_variant_ntlm, windows_tls_pubkey_hash[0..], pubkey_ts[0..pubkey_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &pubkey_frame, .len = @intCast(pubkey_frame_len), .capacity = pubkey_frame.len };
-    if (processCredsspWindowsState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     const pubkey_state = state_text[0..@intCast(state_out.len)];
     if (!contains(pubkey_state, "binding=windows-tls-pubkey") or !contains(pubkey_state, "complete=yes")) return auth_result_bad_state;
 
     var bad_pubkey_frame = pubkey_frame;
     bad_pubkey_frame[pubkey_frame_len - 1] ^= 0x7D;
     var bad_pubkey_in = r4os.abi.ProtocolBuffer{ .data = &bad_pubkey_frame, .len = @intCast(pubkey_frame_len), .capacity = bad_pubkey_frame.len };
-    if (processCredsspWindowsState(&bad_pubkey_in, &state_out) != auth_result_bad_pubkeyauth) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&bad_pubkey_in, &state_out) != auth_result_bad_pubkeyauth) return auth_result_bad_state;
 
     var kerberos_spnego: [128]u8 = .{0} ** 128;
     const kerberos_spnego_len = buildSpnegoNegTokenInitBytes(kerberos_spnego[0..], "", oid_kerberos[0..]) orelse return auth_result_buffer_small;
@@ -603,7 +584,7 @@ fn runCredsspWindowsHarness(result: *CredsspWindowsHarnessResult) i32 {
     var kerberos_frame: [256]u8 = .{0} ** 256;
     const kerberos_frame_len = buildCredsspWindowsStateFrame(fixture_server_challenge, kerberos_frame[0..], credssp_phase_negotiate, true, credssp_windows_variant_kerberos, windows_tls_pubkey_hash[0..], kerberos_ts[0..kerberos_ts_len]) orelse return auth_result_buffer_small;
     var kerberos_in = r4os.abi.ProtocolBuffer{ .data = &kerberos_frame, .len = @intCast(kerberos_frame_len), .capacity = kerberos_frame.len };
-    if (processCredsspWindowsState(&kerberos_in, &state_out) != auth_result_unsupported_kerberos) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&kerberos_in, &state_out) != auth_result_unsupported_kerberos) return auth_result_bad_state;
 
     var domain_auth: [320]u8 = .{0} ** 320;
     const domain_auth_len = buildNtlmAuthenticateTokenVariant(domain_auth[0..], "CORP") orelse return auth_result_buffer_small;
@@ -614,18 +595,18 @@ fn runCredsspWindowsHarness(result: *CredsspWindowsHarnessResult) i32 {
     var domain_frame: [640]u8 = .{0} ** 640;
     const domain_frame_len = buildCredsspWindowsStateFrame(fixture_server_challenge, domain_frame[0..], credssp_phase_authenticate, true, credssp_windows_variant_domain, windows_tls_pubkey_hash[0..], domain_ts[0..domain_ts_len]) orelse return auth_result_buffer_small;
     var domain_in = r4os.abi.ProtocolBuffer{ .data = &domain_frame, .len = @intCast(domain_frame_len), .capacity = domain_frame.len };
-    if (processCredsspWindowsState(&domain_in, &state_out) != auth_result_unsupported_domain) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&domain_in, &state_out) != auth_result_unsupported_domain) return auth_result_bad_state;
 
     var bad_ts_frame = negotiate_frame;
     var bad_ts_len = negotiate_frame_len;
     bad_ts_len -= 3;
     var bad_ts_in = r4os.abi.ProtocolBuffer{ .data = &bad_ts_frame, .len = @intCast(bad_ts_len), .capacity = bad_ts_frame.len };
-    if (processCredsspWindowsState(&bad_ts_in, &state_out) != auth_result_bad_token) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&bad_ts_in, &state_out) != auth_result_bad_token) return auth_result_bad_state;
 
     var missing_tls_frame = negotiate_frame;
     missing_tls_frame[5] = 0;
     var missing_tls_in = r4os.abi.ProtocolBuffer{ .data = &missing_tls_frame, .len = @intCast(negotiate_frame_len), .capacity = missing_tls_frame.len };
-    if (processCredsspWindowsState(&missing_tls_in, &state_out) != auth_result_missing_tls_context) return auth_result_bad_state;
+    if (processCredsspWindowsFixtureState(&missing_tls_in, &state_out) != auth_result_missing_tls_context) return auth_result_bad_state;
 
     result.* = .{
         .negotiate_len = negotiate_ts_len,
@@ -652,7 +633,7 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var state_text: [512]u8 = .{0} ** 512;
     var state_out = r4os.abi.ProtocolBuffer{ .data = &state_text, .len = 0, .capacity = state_text.len };
     var state_in = r4os.abi.ProtocolBuffer{ .data = &negotiate_frame, .len = @intCast(negotiate_frame_len), .capacity = negotiate_frame.len };
-    if (processCredsspLiveState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     if (!contains(state_text[0..@intCast(state_out.len)], "phase=negotiate")) return auth_result_bad_state;
     if (!contains(state_text[0..@intCast(state_out.len)], "stream=R4LK")) return auth_result_bad_state;
 
@@ -664,7 +645,7 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var mixed_frame: [448]u8 = .{0} ** 448;
     const mixed_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, mixed_frame[0..], credssp_phase_negotiate, true, credssp_windows_variant_ntlm, tls_stream[0..], mixed_ts[0..mixed_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &mixed_frame, .len = @intCast(mixed_frame_len), .capacity = mixed_frame.len };
-    if (processCredsspLiveState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     const mixed_state = state_text[0..@intCast(state_out.len)];
     if (!contains(mixed_state, "phase=negotiate") or !contains(mixed_state, "stream=R4LK") or !contains(mixed_state, "ntlm_type=1")) return auth_result_bad_state;
 
@@ -683,7 +664,7 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var authenticate_frame: [704]u8 = .{0} ** 704;
     const authenticate_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, authenticate_frame[0..], credssp_phase_authenticate, true, credssp_windows_variant_ntlm, tls_stream[0..], authenticate_ts[0..authenticate_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &authenticate_frame, .len = @intCast(authenticate_frame_len), .capacity = authenticate_frame.len };
-    if (processCredsspLiveState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     if (!contains(state_text[0..@intCast(state_out.len)], "phase=authenticate")) return auth_result_bad_state;
 
     var bad_password_frame = authenticate_frame;
@@ -695,7 +676,7 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     if (bad_proof_index >= authenticate_frame_len) return auth_result_bad_state;
     bad_password_frame[bad_proof_index] ^= 0x31;
     var bad_password_in = r4os.abi.ProtocolBuffer{ .data = &bad_password_frame, .len = @intCast(authenticate_frame_len), .capacity = bad_password_frame.len };
-    if (processCredsspLiveState(&bad_password_in, &state_out) != auth_result_bad_password) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&bad_password_in, &state_out) != auth_result_bad_password) return auth_result_bad_state;
 
     var pubkeyauth: [16]u8 = undefined;
     buildWindowsPubKeyAuthValue(&pubkeyauth, tls_pubkey_hash);
@@ -704,14 +685,14 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var pubkey_frame: [256]u8 = .{0} ** 256;
     const pubkey_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, pubkey_frame[0..], credssp_phase_pubkeyauth, true, credssp_windows_variant_ntlm, tls_stream[0..], pubkey_ts[0..pubkey_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &pubkey_frame, .len = @intCast(pubkey_frame_len), .capacity = pubkey_frame.len };
-    if (processCredsspLiveState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     const pubkey_state = state_text[0..@intCast(state_out.len)];
     if (!contains(pubkey_state, "binding=r4tls-stream-pubkey") or !contains(pubkey_state, "complete=yes")) return auth_result_bad_state;
 
     var bad_pubkey_frame = pubkey_frame;
     bad_pubkey_frame[pubkey_frame_len - 1] ^= 0x7D;
     var bad_pubkey_in = r4os.abi.ProtocolBuffer{ .data = &bad_pubkey_frame, .len = @intCast(pubkey_frame_len), .capacity = bad_pubkey_frame.len };
-    if (processCredsspLiveState(&bad_pubkey_in, &state_out) != auth_result_bad_pubkeyauth) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&bad_pubkey_in, &state_out) != auth_result_bad_pubkeyauth) return auth_result_bad_state;
 
     const encrypted_auth_info = [_]u8{ 0x52, 0x34, 0x41, 0x55, 0x54, 0x48, 0x2D, 0x43, 0x52, 0x45, 0x44, 0x53, 0x53, 0x50, 0x2D, 0x46, 0x49, 0x4E, 0x41, 0x4C, 0x2D, 0x30, 0x35, 0x35 };
     var encrypted_pubkeyauth: [32]u8 = .{0} ** 32;
@@ -722,14 +703,14 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var windows_pubkey_frame: [320]u8 = .{0} ** 320;
     const windows_pubkey_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, windows_pubkey_frame[0..], credssp_phase_pubkeyauth, true, credssp_windows_variant_ntlm, tls_stream[0..], windows_final_ts[0..windows_final_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &windows_pubkey_frame, .len = @intCast(windows_pubkey_frame_len), .capacity = windows_pubkey_frame.len };
-    if (processCredsspLiveState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     const windows_pubkey_state = state_text[0..@intCast(state_out.len)];
     if (!contains(windows_pubkey_state, "binding=windows-encrypted-pubkey") or !contains(windows_pubkey_state, "complete=yes")) return auth_result_bad_state;
 
     var windows_final_frame: [320]u8 = .{0} ** 320;
     const windows_final_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, windows_final_frame[0..], credssp_phase_authenticate, true, credssp_windows_variant_ntlm, tls_stream[0..], windows_final_ts[0..windows_final_ts_len]) orelse return auth_result_buffer_small;
     state_in = r4os.abi.ProtocolBuffer{ .data = &windows_final_frame, .len = @intCast(windows_final_frame_len), .capacity = windows_final_frame.len };
-    if (processCredsspLiveState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&state_in, &state_out) != auth_result_ok) return auth_result_bad_state;
     const windows_final_state = state_text[0..@intCast(state_out.len)];
     if (!contains(windows_final_state, "binding=windows-encrypted-final") or !contains(windows_final_state, "next=rdp") or !contains(windows_final_state, "complete=yes")) return auth_result_bad_state;
 
@@ -740,7 +721,7 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var kerberos_frame: [352]u8 = .{0} ** 352;
     const kerberos_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, kerberos_frame[0..], credssp_phase_negotiate, true, credssp_windows_variant_kerberos, tls_stream[0..], kerberos_ts[0..kerberos_ts_len]) orelse return auth_result_buffer_small;
     var kerberos_in = r4os.abi.ProtocolBuffer{ .data = &kerberos_frame, .len = @intCast(kerberos_frame_len), .capacity = kerberos_frame.len };
-    if (processCredsspLiveState(&kerberos_in, &state_out) != auth_result_unsupported_kerberos) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&kerberos_in, &state_out) != auth_result_unsupported_kerberos) return auth_result_bad_state;
 
     var domain_auth: [320]u8 = .{0} ** 320;
     const domain_auth_len = buildNtlmAuthenticateTokenVariant(domain_auth[0..], "CORP") orelse return auth_result_buffer_small;
@@ -751,18 +732,18 @@ fn runCredsspLiveHarness(result: *CredsspLiveHarnessResult) i32 {
     var domain_frame: [704]u8 = .{0} ** 704;
     const domain_frame_len = buildCredsspLiveStateFrame(fixture_server_challenge, domain_frame[0..], credssp_phase_authenticate, true, credssp_windows_variant_domain, tls_stream[0..], domain_ts[0..domain_ts_len]) orelse return auth_result_buffer_small;
     var domain_in = r4os.abi.ProtocolBuffer{ .data = &domain_frame, .len = @intCast(domain_frame_len), .capacity = domain_frame.len };
-    if (processCredsspLiveState(&domain_in, &state_out) != auth_result_unsupported_domain) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&domain_in, &state_out) != auth_result_unsupported_domain) return auth_result_bad_state;
 
     var bad_ts_frame = negotiate_frame;
     var bad_ts_len = negotiate_frame_len;
     bad_ts_len -= 3;
     var bad_ts_in = r4os.abi.ProtocolBuffer{ .data = &bad_ts_frame, .len = @intCast(bad_ts_len), .capacity = bad_ts_frame.len };
-    if (processCredsspLiveState(&bad_ts_in, &state_out) != auth_result_bad_token) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&bad_ts_in, &state_out) != auth_result_bad_token) return auth_result_bad_state;
 
     var missing_tls_frame = negotiate_frame;
     missing_tls_frame[6] = 0;
     var missing_tls_in = r4os.abi.ProtocolBuffer{ .data = &missing_tls_frame, .len = @intCast(negotiate_frame_len), .capacity = missing_tls_frame.len };
-    if (processCredsspLiveState(&missing_tls_in, &state_out) != auth_result_missing_tls_context) return auth_result_bad_state;
+    if (processCredsspLiveFixtureState(&missing_tls_in, &state_out) != auth_result_missing_tls_context) return auth_result_bad_state;
 
     result.* = .{
         .stream_len = tls_stream.len,
@@ -929,7 +910,7 @@ fn processCredsspLiveNegotiate(info: TsRequestInfo, out_buffer: *r4os.abi.Protoc
 fn processCredsspLiveAuthenticate(info: TsRequestInfo, server_challenge: [8]u8, tls_pubkey_hash: []const u8, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     if (info.has_auth_info) {
         if (info.has_pub_key_auth) {
-            if (!acceptLivePubKeyAuth(info, tls_pubkey_hash)) return auth_result_bad_pubkeyauth;
+            if (!acceptFixtureLivePubKeyAuth(info, tls_pubkey_hash)) return auth_result_bad_pubkeyauth;
             return writeOut(out_buffer, "credssp-live-state;phase=authenticate;state=R4C2;stream=R4LK;tls=yes;tsrequest=yes;auth_info=ok;pub_key_auth=ok;binding=windows-encrypted-final;auth=ok;user=r4os;next=rdp;resume=no;complete=yes");
         }
         return writeOut(out_buffer, "credssp-live-state;phase=authenticate;state=R4C2;stream=R4LK;tls=yes;tsrequest=yes;auth_info=ok;auth=ok;user=r4os;next=pubkeyauth;resume=yes;complete=no");
@@ -944,7 +925,7 @@ fn processCredsspLiveAuthenticate(info: TsRequestInfo, server_challenge: [8]u8, 
 
 fn processCredsspLivePubKeyAuth(info: TsRequestInfo, tls_pubkey_hash: []const u8, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     if (!info.has_pub_key_auth) return auth_result_bad_pubkeyauth;
-    if (!acceptLivePubKeyAuth(info, tls_pubkey_hash)) return auth_result_bad_pubkeyauth;
+    if (!acceptFixtureLivePubKeyAuth(info, tls_pubkey_hash)) return auth_result_bad_pubkeyauth;
     if (info.pub_key_auth.len == 16) {
         return writeOut(out_buffer, "credssp-live-state;phase=pubkeyauth;state=R4C2;stream=R4LK;tls=yes;tsrequest=yes;pub_key_auth=ok;binding=r4tls-stream-pubkey;auth=ok;user=r4os;next=rdp;resume=no;complete=yes");
     }
@@ -954,7 +935,7 @@ fn processCredsspLivePubKeyAuth(info: TsRequestInfo, tls_pubkey_hash: []const u8
     return writeOut(out_buffer, "credssp-live-state;phase=pubkeyauth;state=R4C2;stream=R4LK;tls=yes;tsrequest=yes;auth_info=ok;pub_key_auth=ok;binding=windows-encrypted-pubkey;auth=ok;user=r4os;next=rdp;resume=no;complete=yes");
 }
 
-fn acceptLivePubKeyAuth(info: TsRequestInfo, tls_pubkey_hash: []const u8) bool {
+fn acceptFixtureLivePubKeyAuth(info: TsRequestInfo, tls_pubkey_hash: []const u8) bool {
     if (!info.has_pub_key_auth) return false;
     if (info.pub_key_auth.len == 16) return validateWindowsPubKeyAuth(info.pub_key_auth, tls_pubkey_hash);
     return info.pub_key_auth.len > 16;
@@ -970,6 +951,7 @@ const TsRequestInfo = struct {
     has_pub_key_auth: bool = false,
     pub_key_auth: []const u8 = "",
     has_client_nonce: bool = false,
+    client_nonce: []const u8 = "",
     has_error_code: bool = false,
     error_code: u32 = 0,
     has_ntlm: bool = false,
@@ -997,8 +979,14 @@ fn parseTsRequestInfo(input: []const u8) ?TsRequestInfo {
     if (top.tag != der_tag_sequence or top.total_len != input.len) return null;
     var info = TsRequestInfo{};
     var pos: usize = 0;
+    var seen: u8 = 0;
     while (pos < top.payload.len) {
         const elem = derElement(top.payload[pos..]) orelse return null;
+        if (elem.tag >= 0xa0 and elem.tag <= 0xa5) {
+            const mask = @as(u8, 1) << @as(u3, @intCast(elem.tag - 0xa0));
+            if ((seen & mask) != 0) return null;
+            seen |= mask;
+        }
         switch (elem.tag) {
             0xA0 => {
                 info.version = parseExplicitInteger(elem.payload) orelse return null;
@@ -1023,7 +1011,7 @@ fn parseTsRequestInfo(input: []const u8) ?TsRequestInfo {
                 info.has_error_code = true;
             },
             0xA5 => {
-                _ = parseExplicitOctetString(elem.payload) orelse return null;
+                info.client_nonce = parseExplicitOctetString(elem.payload) orelse return null;
                 info.has_client_nonce = true;
             },
             else => info.unknown_fields +%= 1,
@@ -1212,6 +1200,10 @@ fn buildSpnegoNegTokenRespBytes(out: []u8, token: []const u8, neg_state: u8) ?us
 }
 
 fn buildTsRequestPubKeyAuthBytes(out: []u8, pub_key_auth: []const u8) ?usize {
+    return buildTsRequestPubKeyAuthBytesWithVersion(out, pub_key_auth, tsrequest_version);
+}
+
+fn buildTsRequestPubKeyAuthBytesWithVersion(out: []u8, pub_key_auth: []const u8, version: u8) ?usize {
     const version_inner_len = derTotalLen(1);
     const version_field_len = derTotalLen(version_inner_len);
     const pub_inner_len = derTotalLen(pub_key_auth.len);
@@ -1224,7 +1216,7 @@ fn buildTsRequestPubKeyAuthBytes(out: []u8, pub_key_auth: []const u8) ?usize {
     if (!putDerHeader(out, &pos, der_tag_sequence, body_len)) return null;
     if (!putDerHeader(out, &pos, 0xA0, version_inner_len)) return null;
     if (!putDerHeader(out, &pos, der_tag_integer, 1)) return null;
-    if (!putByte(out, &pos, tsrequest_version)) return null;
+    if (!putByte(out, &pos, version)) return null;
     if (!putDerHeader(out, &pos, 0xA3, pub_inner_len)) return null;
     if (!putDerHeader(out, &pos, der_tag_octet_string, pub_key_auth.len)) return null;
     if (!putBytes(out, &pos, pub_key_auth)) return null;
@@ -1270,7 +1262,7 @@ fn buildNtlmNegotiateToken(out: []u8) ?usize {
 
 fn buildNtlmChallengeToken(out: []u8, server_challenge: [8]u8) ?usize {
     var target_name: [16]u8 = .{0} ** 16;
-    const target_len = asciiToUtf16Le(target_name[0..], fixed_target, false);
+    const target_len = asciiToUtf16Le(target_name[0..], fixture_target, false);
     const target_info = [_]u8{ 0x00, 0x00, 0x00, 0x00 };
     const payload_start: usize = 48;
     const total = payload_start + target_len + target_info.len;
@@ -1297,9 +1289,9 @@ fn buildNtlmAuthenticateTokenVariant(out: []u8, domain_text: []const u8) ?usize 
     var domain_utf16: [32]u8 = .{0} ** 32;
     const domain_len = asciiToUtf16Le(domain_utf16[0..], domain_text, true);
     var user_utf16: [16]u8 = .{0} ** 16;
-    const user_len = asciiToUtf16Le(user_utf16[0..], fixed_user, false);
+    const user_len = asciiToUtf16Le(user_utf16[0..], fixture_user, false);
     var workstation_utf16: [16]u8 = .{0} ** 16;
-    const workstation_len = asciiToUtf16Le(workstation_utf16[0..], fixed_workstation, false);
+    const workstation_len = asciiToUtf16Le(workstation_utf16[0..], fixture_workstation, false);
 
     const payload_start: usize = 64;
     var payload_pos = payload_start;
@@ -1327,7 +1319,7 @@ fn buildNtlmAuthenticateTokenVariant(out: []u8, domain_text: []const u8) ?usize 
 }
 
 fn buildNtlmv2Response(out: []u8) ?usize {
-    const profile = ntlmv2FixedProfile();
+    const profile = ntlmv2FixtureProfile();
     var blob: [32]u8 = .{0} ** 32;
     blob[0] = 0x01;
     blob[1] = 0x01;
@@ -1346,8 +1338,8 @@ fn validateNtlmAuthenticateToken(token: []const u8, server_challenge: [8]u8) i32
     const nt_response = readSecurityBuffer(message, 20) orelse return auth_result_bad_token;
     const domain = readSecurityBuffer(message, 28) orelse return auth_result_bad_token;
     const user = readSecurityBuffer(message, 36) orelse return auth_result_bad_token;
-    if (!utf16LeEqualsAscii(user, fixed_user, false)) return auth_result_bad_password;
-    if (domain.len != 0 and !utf16LeEqualsAscii(domain, fixed_target, true)) return auth_result_unsupported_domain;
+    if (!utf16LeEqualsAscii(user, fixture_user, false)) return auth_result_bad_password;
+    if (domain.len != 0 and !utf16LeEqualsAscii(domain, fixture_target, true)) return auth_result_unsupported_domain;
     if (nt_response.len < 16 + 32) return auth_result_bad_password;
     const proof = nt_response[0..16];
     const blob = nt_response[16..];
@@ -1404,20 +1396,20 @@ fn validateWindowsPubKeyAuth(bytes: []const u8, tls_pubkey_hash: []const u8) boo
 
 fn ntlmv2Identity() struct { nt_hash: [16]u8, ntowfv2: [16]u8 } {
     var password_utf16: [64]u8 = .{0} ** 64;
-    const password_len = asciiToUtf16Le(password_utf16[0..], fixed_password, false);
+    const password_len = asciiToUtf16Le(password_utf16[0..], fixture_password, false);
     var nt_hash: [16]u8 = undefined;
     md4Hash(password_utf16[0..password_len], &nt_hash);
 
     var identity_utf16: [64]u8 = .{0} ** 64;
-    var identity_len = asciiToUtf16Le(identity_utf16[0..], fixed_user_upper, false);
-    identity_len += asciiToUtf16Le(identity_utf16[identity_len..], fixed_target, false);
+    var identity_len = asciiToUtf16Le(identity_utf16[0..], fixture_user_upper, false);
+    identity_len += asciiToUtf16Le(identity_utf16[identity_len..], fixture_target, false);
     var ntowfv2: [16]u8 = undefined;
     HmacMd5.create(&ntowfv2, identity_utf16[0..identity_len], nt_hash[0..]);
 
     return .{ .nt_hash = nt_hash, .ntowfv2 = ntowfv2 };
 }
 
-fn ntlmv2FixedProfile() Ntlmv2Profile {
+fn ntlmv2FixtureProfile() Ntlmv2Profile {
     const identity = ntlmv2Identity();
     const nt_hash = identity.nt_hash;
     const ntowfv2 = identity.ntowfv2;
@@ -1488,27 +1480,27 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     const profile_rc = describeNtlmv2Profile(&spnego_in, &profile_out);
     if (profile_rc != 0) return profile_rc;
     const profile_got = profile_text[0..@intCast(profile_out.len)];
-    if (!contains(profile_got, "ntlmv2-profile;user=r4os")) return -6;
+    if (!contains(profile_got, "ntlmv2-profile;scope=diagnostic-only;user=r4os")) return -6;
     if (!contains(profile_got, "ntproof=")) return -6;
 
     const valid_creds = "tls=protected;user=r4os;password=rosebud;domain=";
     const valid_in = r4os.abi.ProtocolBuffer{ .data = @constCast(valid_creds.ptr), .len = valid_creds.len, .capacity = valid_creds.len };
     var valid_text: [128]u8 = .{0} ** 128;
     var valid_out = r4os.abi.ProtocolBuffer{ .data = &valid_text, .len = 0, .capacity = valid_text.len };
-    if (validateFixedCredentials(&valid_in, &valid_out) != 0) return -6;
+    if (validateFixtureCredentials(&valid_in, &valid_out) != 0) return -6;
     if (!contains(valid_text[0..@intCast(valid_out.len)], "auth;result=ok")) return -6;
     const bad_password = "tls=protected;user=r4os;password=wrong;domain=";
     const bad_password_in = r4os.abi.ProtocolBuffer{ .data = @constCast(bad_password.ptr), .len = bad_password.len, .capacity = bad_password.len };
-    if (validateFixedCredentials(&bad_password_in, &valid_out) != auth_result_bad_password) return -6;
+    if (validateFixtureCredentials(&bad_password_in, &valid_out) != auth_result_bad_password) return -6;
     const missing_tls = "user=r4os;password=rosebud;domain=";
     const missing_tls_in = r4os.abi.ProtocolBuffer{ .data = @constCast(missing_tls.ptr), .len = missing_tls.len, .capacity = missing_tls.len };
-    if (validateFixedCredentials(&missing_tls_in, &valid_out) != auth_result_missing_tls_context) return -6;
+    if (validateFixtureCredentials(&missing_tls_in, &valid_out) != auth_result_missing_tls_context) return -6;
     const domain_login = "tls=protected;user=r4os;password=rosebud;domain=CORP";
     const domain_in = r4os.abi.ProtocolBuffer{ .data = @constCast(domain_login.ptr), .len = domain_login.len, .capacity = domain_login.len };
-    if (validateFixedCredentials(&domain_in, &valid_out) != auth_result_unsupported_domain) return -6;
+    if (validateFixtureCredentials(&domain_in, &valid_out) != auth_result_unsupported_domain) return -6;
     const kerberos_login = "tls=protected;mech=kerberos;user=r4os;password=rosebud";
     const kerberos_in = r4os.abi.ProtocolBuffer{ .data = @constCast(kerberos_login.ptr), .len = kerberos_login.len, .capacity = kerberos_login.len };
-    if (validateFixedCredentials(&kerberos_in, &valid_out) != auth_result_unsupported_kerberos) return -6;
+    if (validateFixtureCredentials(&kerberos_in, &valid_out) != auth_result_unsupported_kerberos) return -6;
 
     var state_contract_text: [896]u8 = .{0} ** 896;
     var state_contract_out = r4os.abi.ProtocolBuffer{ .data = &state_contract_text, .len = 0, .capacity = state_contract_text.len };
@@ -1520,7 +1512,7 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     var windows_contract_out = r4os.abi.ProtocolBuffer{ .data = &windows_contract_text, .len = 0, .capacity = windows_contract_text.len };
     if (describeCredsspWindowsContract(&valid_in, &windows_contract_out) != 0) return -6;
     const windows_contract_got = windows_contract_text[0..@intCast(windows_contract_out.len)];
-    if (!contains(windows_contract_got, "credssp-windows-contract")) return -6;
+    if (!contains(windows_contract_got, "credssp-windows-contract;scope=diagnostic-only;acceptance_op16=unsupported")) return -6;
     if (!contains(windows_contract_got, "R4W2+phase+tls+variant")) return -6;
     if (!contains(windows_contract_got, "bad_pubkeyauth=-24")) return -6;
 
@@ -1538,7 +1530,7 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     if (describeCredsspLiveContract(&valid_in, &live_contract_out) != 0) return -6;
     const live_contract_got = live_contract_text[0..@intCast(live_contract_out.len)];
     if (!contains(live_contract_got, "credssp-live-contract")) return -6;
-    if (!contains(live_contract_got, "R4C2+phase+variant+flags")) return -6;
+    if (!contains(live_contract_got, "input=R4C3;reply=R4AO")) return -6;
     if (!contains(live_contract_got, "stream_state=R4LK")) return -6;
 
     var live_harness_text: [1280]u8 = .{0} ** 1280;
@@ -1558,12 +1550,12 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     var state_text: [256]u8 = .{0} ** 256;
     var state_out = r4os.abi.ProtocolBuffer{ .data = &state_text, .len = 0, .capacity = state_text.len };
     var state_in = r4os.abi.ProtocolBuffer{ .data = &negotiate_frame, .len = @intCast(negotiate_frame_len), .capacity = negotiate_frame.len };
-    if (processCredsspState(&state_in, &state_out) != 0) return -6;
+    if (processCredsspFixtureState(&state_in, &state_out) != 0) return -6;
     const negotiate_state = state_text[0..@intCast(state_out.len)];
     if (!contains(negotiate_state, "phase=negotiate")) return -6;
     if (!contains(negotiate_state, "next=send_challenge")) return -6;
     negotiate_frame[5] = 0;
-    if (processCredsspState(&state_in, &state_out) != auth_result_missing_tls_context) return -6;
+    if (processCredsspFixtureState(&state_in, &state_out) != auth_result_missing_tls_context) return -6;
     negotiate_frame[5] = 1;
 
     var challenge_ts: [256]u8 = .{0} ** 256;
@@ -1578,7 +1570,7 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     var authenticate_frame: [640]u8 = .{0} ** 640;
     const authenticate_frame_len = buildCredsspStateFrame(fixture_server_challenge, authenticate_frame[0..], credssp_phase_authenticate, true, authenticate_ts[0..@intCast(authenticate_out.len)]) orelse return -6;
     state_in = r4os.abi.ProtocolBuffer{ .data = &authenticate_frame, .len = @intCast(authenticate_frame_len), .capacity = authenticate_frame.len };
-    if (processCredsspState(&state_in, &state_out) != 0) return -6;
+    if (processCredsspFixtureState(&state_in, &state_out) != 0) return -6;
     const authenticate_state = state_text[0..@intCast(state_out.len)];
     if (!contains(authenticate_state, "phase=authenticate")) return -6;
     if (!contains(authenticate_state, "auth=ok")) return -6;
@@ -1588,7 +1580,7 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     const bad_proof_index = ntlm_auth_start + @as(usize, @intCast(nt_response_offset));
     if (bad_proof_index >= authenticate_frame_len) return -6;
     authenticate_frame[bad_proof_index] ^= 0x55;
-    if (processCredsspState(&state_in, &state_out) != auth_result_bad_password) return -6;
+    if (processCredsspFixtureState(&state_in, &state_out) != auth_result_bad_password) return -6;
     authenticate_frame[bad_proof_index] ^= 0x55;
 
     var pubkey_ts: [128]u8 = .{0} ** 128;
@@ -1597,12 +1589,12 @@ fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
     var pubkey_frame: [160]u8 = .{0} ** 160;
     const pubkey_frame_len = buildCredsspStateFrame(fixture_server_challenge, pubkey_frame[0..], credssp_phase_pubkeyauth, true, pubkey_ts[0..@intCast(pubkey_out.len)]) orelse return -6;
     state_in = r4os.abi.ProtocolBuffer{ .data = &pubkey_frame, .len = @intCast(pubkey_frame_len), .capacity = pubkey_frame.len };
-    if (processCredsspState(&state_in, &state_out) != 0) return -6;
+    if (processCredsspFixtureState(&state_in, &state_out) != 0) return -6;
     const pubkey_state = state_text[0..@intCast(state_out.len)];
     if (!contains(pubkey_state, "phase=pubkeyauth")) return -6;
     if (!contains(pubkey_state, "complete=yes")) return -6;
     pubkey_frame[pubkey_frame_len - 1] ^= 0x22;
-    if (processCredsspState(&state_in, &state_out) != auth_result_bad_pubkeyauth) return -6;
+    if (processCredsspFixtureState(&state_in, &state_out) != auth_result_bad_pubkeyauth) return -6;
 
     if (classifyTsRequest(&spnego_in, &out) != auth_result_bad_token) return -6;
     var md4_empty: [16]u8 = undefined;
@@ -1734,7 +1726,7 @@ fn fieldEquals(input: []const u8, field: []const u8, value: []const u8) bool {
 fn fieldHasUnsupportedDomain(input: []const u8) bool {
     const got = fieldValue(input, "domain") orelse return false;
     if (got.len == 0) return false;
-    return !bytesEqual(got, fixed_target);
+    return !bytesEqual(got, fixture_target);
 }
 
 fn fieldValue(input: []const u8, field: []const u8) ?[]const u8 {
@@ -2045,4 +2037,156 @@ fn note(comptime text: []const u8) [64]u8 {
     var out: [64]u8 = .{0} ** 64;
     @memcpy(out[0..text.len], text);
     return out;
+}
+
+const SessionEngine = @import("credssp_session.zig").Engine(struct {
+    pub fn md4(input: []const u8, out: *[16]u8) void {
+        md4Hash(input, out);
+    }
+    pub fn parseRequest(input: []const u8) ?TsRequestInfo {
+        return parseTsRequestInfo(input);
+    }
+    pub fn ntlmMessage(input: []const u8) ?[]const u8 {
+        return unwrapSessionNtlmToken(input);
+    }
+    pub fn spnego(out: []u8, token: []const u8, state: u8) ?usize {
+        return buildSpnegoNegTokenRespBytes(out, token, state);
+    }
+    pub fn tokenRequest(out: []u8, token: []const u8, version: u8) ?usize {
+        return buildTsRequestBytesWithVersion(out, token, version);
+    }
+    pub fn bindingRequest(out: []u8, token: []const u8, version: u8) ?usize {
+        return buildTsRequestPubKeyAuthBytesWithVersion(out, token, version);
+    }
+    pub fn passwordCredentials(input: []const u8) ?PasswordCredentials {
+        return parsePasswordCredentials(input);
+    }
+});
+const SessionError = @import("credssp_session.zig").Error;
+const PasswordCredentials = struct { domain: []const u8, user: []const u8, password: []const u8 };
+
+fn parsePasswordCredentials(input: []const u8) ?PasswordCredentials {
+    const outer = derElement(input) orelse return null;
+    if (outer.tag != der_tag_sequence or outer.total_len != input.len) return null;
+    const kind = derElement(outer.payload) orelse return null;
+    if (kind.tag != 0xa0 or (parseExplicitInteger(kind.payload) orelse return null) != 1) return null;
+    const wrapped = derElement(outer.payload[kind.total_len..]) orelse return null;
+    if (wrapped.tag != 0xa1 or kind.total_len + wrapped.total_len != outer.payload.len) return null;
+    const password_bytes = parseExplicitOctetString(wrapped.payload) orelse return null;
+    const fields = derElement(password_bytes) orelse return null;
+    if (fields.tag != der_tag_sequence or fields.total_len != password_bytes.len) return null;
+    var values: [3][]const u8 = undefined;
+    var pos: usize = 0;
+    for (0..3) |index| {
+        const field = derElement(fields.payload[pos..]) orelse return null;
+        if (field.tag != 0xa0 + index) return null;
+        values[index] = parseExplicitOctetString(field.payload) orelse return null;
+        pos += field.total_len;
+    }
+    if (pos != fields.payload.len) return null;
+    return .{ .domain = values[0], .user = values[1], .password = values[2] };
+}
+
+fn sessionErrorCode(err: SessionError) i32 {
+    return switch (err) {
+        error.BadConfig => auth_result_bad_config,
+        error.BadState => auth_result_bad_state,
+        error.BadToken => auth_result_bad_token,
+        error.BadPassword => auth_result_bad_password,
+        error.BadBinding => auth_result_bad_pubkeyauth,
+        error.Unsupported => auth_result_unsupported_ntlm,
+        error.EntropyUnavailable => auth_result_entropy_unavailable,
+        error.BufferSmall => auth_result_buffer_small,
+    };
+}
+
+const SessionConfig = struct { user: []const u8, password: []const u8 };
+fn parseSessionConfig(input: []const u8) ?SessionConfig {
+    if (input.len < 8 or !startsWith(input, "R4AC")) return null;
+    const user_len: usize = readLe16(input[4..6]);
+    const password_len: usize = readLe16(input[6..8]);
+    if (8 + user_len + password_len != input.len) return null;
+    return .{ .user = input[8..][0..user_len], .password = input[8 + user_len ..] };
+}
+fn validateSessionConfig(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+    const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
+    const config = parseSessionConfig(input) orelse return auth_result_bad_config;
+    SessionEngine.validateConfig(config.user, config.password) catch |err| return sessionErrorCode(err);
+    return writeOut(out_buffer, "credssp-config;valid=yes;auth=pending");
+}
+
+const session_reply_header: usize = 16;
+const session_size = @sizeOf(SessionEngine.Session);
+fn finishSessionReply(out: []u8, out_buffer: *r4os.abi.ProtocolBuffer, session: *const SessionEngine.Session, wire_len: usize) void {
+    @memcpy(out[0..4], "R4AO");
+    writeLe32(out[4..8], session_size);
+    writeLe32(out[8..12], @intCast(wire_len));
+    out[12] = session.phase;
+    @memset(out[13..16], 0);
+    @memcpy(out[session_reply_header..][0..session_size], std.mem.asBytes(session));
+    out_buffer.len = @intCast(session_reply_header + session_size + wire_len);
+}
+
+fn beginOwnedCredsspSession(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+    const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
+    const out = outputBytes(out_buffer) orelse return auth_result_bad_buffer;
+    if (out.len < session_reply_header + session_size) return auth_result_buffer_small;
+    if (input.len < 12 or !startsWith(input, "R4AI")) return auth_result_bad_state;
+    const user_len: usize = readLe16(input[4..6]);
+    const password_len: usize = readLe16(input[6..8]);
+    const tls_len: usize = readLe16(input[8..10]);
+    const key_len: usize = readLe16(input[10..12]);
+    if (12 + user_len + password_len + tls_len + key_len != input.len) return auth_result_bad_state;
+    const user = input[12..][0..user_len];
+    const password = input[12 + user_len ..][0..password_len];
+    const tls = input[12 + user_len + password_len ..][0..tls_len];
+    const key = input[12 + user_len + password_len + tls_len ..];
+    var session = SessionEngine.Session.init(user, password, tls, key) catch |err| return sessionErrorCode(err);
+    defer session.clear();
+    finishSessionReply(out, out_buffer, &session, 0);
+    return auth_result_ok;
+}
+
+fn processOwnedCredsspSession(in_buffer: *const r4os.abi.ProtocolBuffer, out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+    const input = inputBytes(in_buffer) orelse return auth_result_bad_buffer;
+    const out = outputBytes(out_buffer) orelse return auth_result_bad_buffer;
+    if (out.len < session_reply_header + session_size) return auth_result_buffer_small;
+    if (input.len < 16 or !startsWith(input, "R4C3")) return auth_result_bad_state;
+    const state_len: usize = readLe32(input[4..8]);
+    const tls_len: usize = readLe32(input[8..12]);
+    const request_len: usize = readLe32(input[12..16]);
+    if (state_len != session_size or tls_len != 140 or request_len > 4096 or 16 + state_len + tls_len + request_len != input.len) return auth_result_bad_state;
+    var session: SessionEngine.Session = undefined;
+    @memcpy(std.mem.asBytes(&session), input[16..][0..session_size]);
+    defer session.clear();
+    const tls = input[16 + state_len ..][0..tls_len];
+    const request = input[16 + state_len + tls_len ..];
+    const length = session.process(tls, request, out[session_reply_header + session_size ..]) catch |err| return sessionErrorCode(err);
+    finishSessionReply(out, out_buffer, &session, length);
+    return auth_result_ok;
+}
+
+// MIC covers the exact NTLM token, excluding any surrounding SPNEGO fields.
+fn unwrapSessionNtlmToken(input: []const u8) ?[]const u8 {
+    if (startsWith(input, ntlmssp_signature)) return input;
+    const top = derElement(input) orelse return null;
+    if (top.total_len != input.len or (top.tag & 0x20) == 0) return null;
+    var result: ?[]const u8 = null;
+    if (!findSessionNtlmOctet(top.payload, 0, &result)) return null;
+    return result;
+}
+fn findSessionNtlmOctet(input: []const u8, depth: u8, result: *?[]const u8) bool {
+    if (depth >= 8) return false;
+    var pos: usize = 0;
+    while (pos < input.len) {
+        const part = derElement(input[pos..]) orelse return false;
+        if (part.tag == der_tag_octet_string and startsWith(part.payload, ntlmssp_signature)) {
+            if (result.* != null) return false;
+            result.* = part.payload;
+        } else if ((part.tag & 0x20) != 0) {
+            if (!findSessionNtlmOctet(part.payload, depth + 1, result)) return false;
+        }
+        pos += part.total_len;
+    }
+    return true;
 }

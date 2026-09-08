@@ -1,161 +1,62 @@
-﻿R4AUTH.R4P
-==========
-
-R4AUTH.R4P ist die wiederverwendbare Authentifizierungs-Protokollbasis fuer
-R4OS. Die erste Zielrolle ist CredSSP fuer Windows-mstsc-kompatibles RDP.
-
-Stand 0.55.31:
-
-- Artefakt: `R4AUTH.R4P`
-- Zielpfad im Image: `C:\R4OS\PROTOCOLS\R4AUTH.R4P`
-- R4P-Rolle: `security.credssp`
-- Kategorie: `data`
-- Dependency: `security.tls`
-- Erste Konsumentenlinie: RDPSVC
-
-0.55.16 legt den R4P-Besitz und eine erste Dispatch-Kante an. Das Modul kann
-seine Capabilities melden, eine DER-Sequenz als CredSSP-TSRequest-Huelle
-klassifizieren und diese Basis per Selftest pruefen. Das ist noch keine
-fertige NLA-Anmeldung und wird bewusst nicht als mstsc-Erfolg ausgegeben.
-
-Seit 0.55.20 besitzt R4AUTH die CredSSP-Basis fuer den modernen RDPSVC-Pfad.
-`op_classify_tsrequest` verarbeitet TSRequest-Felder fuer Version,
-NegoTokens, AuthInfo, PubKeyAuth, ErrorCode und ClientNonce. Der Parser lehnt
-kaputte DER-Laengen, unvollstaendige Huellen und falsch getaggte Felder ab.
-`op_build_tsrequest` erzeugt eine TSRequest-Huelle mit Version 2 und optionalem
-SPNEGO-NegoToken.
-
-Seit 0.55.39 akzeptiert die Auswertung fuer echte Windows-mstsc-Flows nicht
-mehr nur TSRequest-Version 2, sondern den kompatiblen Bereich 2 bis 6. Die
-lokalen Builder bleiben fuer reproduzierbare Fixtures weiter bei Version 2;
-der Parser blockiert moderne mstsc-Clients aber nicht mehr allein deshalb als
-`bad_token`, wenn Windows eine hoehere CredSSP-Version sendet.
-
-SPNEGO wird ueber `op_classify_spnego` und
-`op_build_spnego_neg_token_resp` abgebildet. Unterstuetzt ist der NTLMSSP-
-Pfad mit NegTokenInit/NegTokenResp; Kerberos wird erkannt, aber als
-`unsupported-kerberos` gemeldet. Es gibt keinen stillen Domain- oder Kerberos-
-Fallback.
-
-NTLMv2 besitzt ab 0.55.20 echte Kernprimitive fuer das feste R4OS-Profil:
-NT-Hash aus dem Passwort `rosebud`, NTOWFv2 fuer `R4OS`, deterministische
-Server-/Client-Challenge und NTProof-Fixture per HMAC-MD5. `op_ntlmv2_profile`
-meldet diese Werte fuer Harness und RDPSVC-Anbindung. Die eigentliche
-mstsc-End-to-End-State-Machine folgt spaeter; diese Unterversion markiert noch
-keinen fertigen NLA-Erfolg.
-
-Der Login ist fest verdrahtet:
-
-- User: `r4os`
-- Passwort: `rosebud`
-- Domain/Kerberos: nicht unterstuetzt
-- Berechtigungen/Userverwaltung: keine
-
-`op_validate_fixed_credentials` prueft nur diesen technischen Single-User-
-Vertrag und verlangt einen geschuetzten TLS-Kontextmarker. Fehlerbilder:
-
-- `bad_password=-20`
-- `bad_token=-6`
-- `unsupported_kerberos=-21`
-- `unsupported_domain=-22`
-- `missing_tls_context=-23`
-- `bad_pubkeyauth=-24`
-- `bad_state=-25`
-- `unsupported_ntlm=-26`
-
-Seit 0.55.25 besitzt R4AUTH die wiederverwendbare CredSSP-State-Machine. Der
-neue Vertrag `op_credssp_state_contract` beschreibt das Eingabeformat
-`R4S2 + phase + tls + reserved + challenge8 + TSRequest`, die Phasen
-`negotiate`, `authenticate` und `pubkeyauth`, die feste TLS-Pflicht und die
-Folgeaktionen `send_challenge`, `pubkeyauth` und `rdp`.
-
-`op_credssp_process_state` verarbeitet reale TSRequest-DER-Huellen aus diesem
-Frame und entscheidet die State-Machine:
-
-- Phase 1 erwartet NTLMSSP Type 1 und fordert die NTLM-Challenge an.
-- Phase 2 erwartet NTLMSSP Type 3 und prueft User, Domain und NTLMv2-
-  Response gegen das feste R4OS-Profil.
-- Phase 3 erwartet PubKeyAuth und validiert die TLS-Pubkey-Bindung.
-
-Op12 baut den produktiven Challenge-TSRequest aus dem Zustand der Sitzung.
-Die ausdruecklichen Ops `op_credssp_build_authenticate_fixture` und
-`op_credssp_build_pubkeyauth_fixture` liefern reproduzierbare TSRequest-
-Fixtures ausschliesslich fuer Diagnosen. Type3 wird
-nicht als Klartextpasswort ausgewertet, sondern ueber NTProof/Blob,
-Server-Challenge, Client-Challenge und NTOWFv2 verifiziert. PubKeyAuth ist als
-HMAC-MD5-Bindung an den TLS-Public-Key-Hash modelliert, bis RDPSVC die echte
-R4TLS-Session-Key-/Transcript-Uebergabe besitzt.
-
-Seit 0.55.28 besitzt R4AUTH eine Windows-nahe CredSSP-Variante fuer den
-modernen mstsc-Pfad. `op_credssp_windows_contract` (`op15`) beschreibt das
-neue Eingabeformat `R4W2 + phase + tls + variant + reserved +
-tls_pubkey_hash32 + challenge8 + TSRequest`. `op_credssp_process_windows_state` (`op16`)
-verarbeitet dieses Frame und prueft PubKeyAuth nicht mehr gegen eine rein
-statische Fixture, sondern gegen den im Frame uebergebenen TLS-Public-Key-
-Hash. `op_credssp_windows_harness` (`op17`) fuehrt einen kompletten
-Windows-nahen Ablauf ueber NegTokenInit, Server-Challenge, NegTokenResp mit
-NTLM Type3 und PubKeyAuth aus.
-
-Der Harness prueft ausserdem stabile Fehlerbilder: manipulierte PubKeyAuth
-liefert `bad_pubkeyauth=-24`, Kerberos-Only-NegTokenInit liefert
-`unsupported_kerberos=-21`, Domain-Anmeldung liefert
-`unsupported_domain=-22`, kaputte TSRequest-DER-Huellen liefern
-`bad_token=-6` und fehlender TLS-Kontext liefert `missing_tls_context=-23`.
-Damit bleibt das Ziel weiterhin Single-User `r4os` / `rosebud`, aber die
-PubKeyAuth-Bindung ist fuer die naechste RDPSVC-Streamaktivierung an einen
-konkreten TLS-Public-Key-Pfad anschliessbar.
-
-Seit 0.55.30 validiert R4AUTH NTLM Type3 auch dann relativ zur eingebetteten
-`NTLMSSP`-Nachricht, wenn diese in einem SPNEGO-NegTokenResp transportiert
-wird. Dadurch bleiben Windows-nahe TSRequest-NegoTokens opak fuer die
-TSRequest-Schicht, waehrend die NTLM-Security-Buffer weiter korrekt relativ
-zum NTLMSSP-Header ausgewertet werden.
-
-Seit 0.55.31 besitzt R4AUTH den Live-CredSSP-Vertrag fuer einen vorhandenen
-R4TLS-Streamzustand. `op_credssp_live_contract` (`op18`) beschreibt das
-Frame `R4C2 + phase + variant + flags + reserved + stream_len + challenge8 + R4LK +
-TSRequest`. `op_credssp_process_live_state` (`op19`) verarbeitet echte
-TSRequest-Flights ueber diesem wiederaufnehmbaren Live-State. Der
-TLS-Kontext wird nicht als Textmarker uebergeben, sondern als `R4LK`-
-Streamzustand aus R4TLS; R4AUTH entnimmt daraus den TLS-Public-Key-Hash fuer
-die CredSSP-PubKeyAuth-Bindung.
-
-`op_credssp_live_harness` (`op20`) fuehrt den Windows-nahen Negotiate-,
-Authenticate- und PubKeyAuth-Pfad ueber `R4C2`/`R4LK` aus und prueft stabile
-Fehlerbilder fuer falsches Passwort, falsche PubKeyAuth, Kerberos,
-Domain-Anmeldung, kaputte TSRequests und fehlenden TLS-Stream. Damit ist die
-R4AUTH-Seite fuer die naechste RDPSVC-CredSSP-Live-Schleife vorbereitet,
-ohne TLS-, NTLM- oder CredSSP-Logik in den Dienst zu kopieren.
-
-Seit 0.55.39 prueft der Live-Harness zusaetzlich einen Windows-naeheren
-Final-TSRequest mit `authInfo` und verschluesseltem `pubKeyAuth`. In diesem
-fully-trusted Single-User-System wird dieser geschuetzte Abschluss als
-`windows_final=ok` gemeldet; manipulierte synthetische 16-Byte-PubKeyAuth-
-Fixtures bleiben weiterhin `bad_pubkeyauth`.
-
-Die naechsten Ausbaustufen gehoeren hierher:
-
-- RDPSVC Live-Handshake ueber den produktiven R4TLS-Stream.
-- Windows-mstsc-End-to-End-Abnahme mit echten Client-PDUs.
-
-RDPSVC nutzt diese Logik als Konsument und bleibt frei von privaten
-CredSSP-/NTLM-/ASN.1-Implementierungen.
+﻿R4AUTH.R4P - aktueller Protokollvertrag
+=====================================
 
 
-Sitzungs-Challenge ab 0.78.61
----------------------------
-Op21 erzeugt acht frische Challengebytes aus SDK secure_random.fill. Der
-Aufrufer besitzt sie genau fuer eine Verbindung, uebernimmt sie nie vom Peer
-und verwendet sie nicht erneut fuer einen neuen Anmeldeversuch. Fehlende
-Entropie liefert -27 mit Ausgabelaenge 0. Op12 verlangt exakt diese acht Bytes
-als Eingabe und baut daraus den Type2-TSRequest. Op12 ist keine feste Fixture.
 
-Die privaten Zustandshuellen enthalten dieselbe Challenge: R4S2 (16-Byte-
-Header; Challenge ab8), R4W2 (48-Byte-Header; Challenge ab40) und R4C2
-(20-Byte-Header; Challenge ab12, danach R4LK und TSRequest). Alte Kennungen
-werden abgewiesen. Type3 wird in allen drei Pfaden gegen die Challenge im
-zugehoerigen Zustand geprueft. Festwerte gehoeren nur zu ausdruecklichen
-Diagnose-Fixtures. SPNEGO-Huellen bleiben als solche klassifiziert; nur am
-Byte0 beginnendes NTLMSSP gilt als roher Token.
-Die vollstaendige CredSSP-Nachweis-/Phasenpruefung und konfigurierbare
-Anmeldegrundlage sind gesonderte Folgearbeit 0.78.62.
+R4AUTH: verbindungseigene Anmeldung ab 0.78.62
+-------------------------------------------
+R4AUTH 0.1.3 besitzt den NTLMv2-/CredSSP-Ablauf. RDPSVC uebergibt seine
+beim Dienststart geladene Registrykonfiguration. Das Modul kennt fuer den
+Produktpfad kein festes Kennwort. Unterstuetzt: Benutzername 1..31 druckbare
+ASCII-Bytes ohne Pfadtrenner, Kennwort 1..31 UTF-8-Bytes ohne NUL, leere oder
+lokale Domain R4OS, NTLMv2 mit Unicode, SIGN, SEAL, ESS und 128-Bit-Profil.
+Kerberos und externe Domains sind nicht implementiert.
+
+Op8 (R4AC) prueft nur die Konfigurationsform und meldet auth=pending.
+Op21 initialisiert eine private Sitzung aus R4AI; Benutzer, NT-Hash,
+Hardware-Challenge, TLS-Fingerabdruck und SubjectPublicKey bleiben an diese
+Verbindung gebunden. Op19 verarbeitet R4C3 und liefert R4AO. Op18 beschreibt
+diesen Vertrag. Alle Zahlen der privaten Huellen sind Little Endian:
+
+- R4AC: Magic4, Benutzerlaenge u16, Kennwortlaenge u16, beide Texte.
+- R4AI: Magic4, vier u16-Laengen (Benutzer, Kennwort, R4LK, Public-Key),
+  danach genau diese vier Nutzdatenbereiche.
+- R4C3: Magic4, drei u32-Laengen (Zustand, R4LK, TSRequest), danach die
+  drei Bereiche. Zustand ist opak, R4LK genau140 Bytes, TSRequest max.4096.
+- R4AO: Magic4, Zustandlaenge u32, Antwortlaenge u32, Phase u8, drei
+  Nullbytes, privater Zustand, getrennte Netzwerkantwort. Nur letztere
+  darf an den Client gesendet werden; niemals der Zustand oder R4LK.
+
+Phasen: 1 Negotiate, 2 Authenticate, 3 Credentials, 4 Complete.
+Type1 liefert Type2 mit neuer Challenge und passenden Flags/Payloadoffsets.
+Type3 und pubKeyAuth sind gemeinsam erforderlich; authInfo ist dort noch
+unzulassig. NTProof, NTLMv2-Blob, optionaler bzw. angeforderter MIC und
+verschluesselter Sitzungsschluessel werden geprueft. Der MIC umfasst die
+exakten NTLM-Nachrichten ohne umgebende SPNEGO-Felder.
+
+PubKeyAuth ist eine echte NTLM-ESS-signierte und versiegelte Nachricht.
+Version5/6 bindet den SHA256-Wert aus Richtungskennung inklusive NUL,
+ClientNonce32 und ASN.1 SubjectPublicKey; Version2..4 bindet den Public-Key
+mit der vorgesehenen inkrementierten Serverantwort. Die pro Richtung
+fortgefuehrten RC4-/Signaturzustaende pruefen die Nachrichtensequenz.
+Erst ein anschliessendes versiegeltes authInfo mit TSPasswordCreds fuer
+Benutzer, Domain und Kennwort dieser Sitzung erreicht Complete. Verfruehte,
+fehlende, doppelte oder fremden Sitzungen zugeordnete Teile schlagen fehl.
+R4LK-Recordzaehler duerfen fortschreiten; Schluessel und Zertifikatbindung
+muessen gleich bleiben. Abschluss/Fehler loeschen den lokalen Zustand.
+
+Alte Annahme-Ops11/16 sind nicht mehr verfuegbar (-26). Ops3/7/13/14/17/20
+und die alten R4S2/R4W2/R4C2-Harnessfunktionen sind Diagnose-Fixtures mit
+bekannten Testdaten. Ihr Ergebnis ist kein Nachweis einer echten Anmeldung.
+Op12 bleibt ein Diagnosebuilder mit acht vom Aufrufer gelieferten
+Challengebytes. Der produktive Type2 entsteht ausschliesslich in Op19.
+Fehler: -6 Token, -20 Kennwort/Nachweis, -24 Bindung, -25 Zustand,
+-26 nicht unterstuetztes Profil, -27 fehlende Entropie, -28 Konfiguration;
+Ausgabelaenge ist bei Dispatchfehlern null.
+
+Nachweis: begrenzte ReleaseSafe-Hostfaelle fuer einen unabhaengig erzeugten
+CredSSP-v6-Ablauf, falsches Kennwort, fehlende/falsche Bindung, falsche
+Sitzung/Reihenfolge und Wiederholung; veroeffentlichter NTLM-Sealing-Vektor.
+Ein kurzer SMP4-QEMU-Lauf prueft echte TLS1.2/CredSSP-Pakete mit geaenderten
+lokalen Zugangsdaten und die Ablehnung des bisherigen Standardkennworts.
+Dies ist keine neue Windows-mstsc- oder vollstaendige RDP-Desktopabnahme.
