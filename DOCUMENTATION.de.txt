@@ -65,7 +65,7 @@ Vertrag und verlangt einen geschuetzten TLS-Kontextmarker. Fehlerbilder:
 
 Seit 0.55.25 besitzt R4AUTH die wiederverwendbare CredSSP-State-Machine. Der
 neue Vertrag `op_credssp_state_contract` beschreibt das Eingabeformat
-`R4CS + phase + tls + reserved + TSRequest`, die Phasen
+`R4S2 + phase + tls + reserved + challenge8 + TSRequest`, die Phasen
 `negotiate`, `authenticate` und `pubkeyauth`, die feste TLS-Pflicht und die
 Folgeaktionen `send_challenge`, `pubkeyauth` und `rdp`.
 
@@ -77,10 +77,10 @@ Frame und entscheidet die State-Machine:
   Response gegen das feste R4OS-Profil.
 - Phase 3 erwartet PubKeyAuth und validiert die TLS-Pubkey-Bindung.
 
-Die Hilfs-Ops `op_credssp_build_challenge`,
-`op_credssp_build_authenticate_fixture` und
+Op12 baut den produktiven Challenge-TSRequest aus dem Zustand der Sitzung.
+Die ausdruecklichen Ops `op_credssp_build_authenticate_fixture` und
 `op_credssp_build_pubkeyauth_fixture` liefern reproduzierbare TSRequest-
-Fixtures fuer Harness, RDPSVC-Preflight und spaetere Live-Tests. Type3 wird
+Fixtures ausschliesslich fuer Diagnosen. Type3 wird
 nicht als Klartextpasswort ausgewertet, sondern ueber NTProof/Blob,
 Server-Challenge, Client-Challenge und NTOWFv2 verifiziert. PubKeyAuth ist als
 HMAC-MD5-Bindung an den TLS-Public-Key-Hash modelliert, bis RDPSVC die echte
@@ -88,8 +88,8 @@ R4TLS-Session-Key-/Transcript-Uebergabe besitzt.
 
 Seit 0.55.28 besitzt R4AUTH eine Windows-nahe CredSSP-Variante fuer den
 modernen mstsc-Pfad. `op_credssp_windows_contract` (`op15`) beschreibt das
-neue Eingabeformat `R4CW + phase + tls + variant + reserved +
-tls_pubkey_hash32 + TSRequest`. `op_credssp_process_windows_state` (`op16`)
+neue Eingabeformat `R4W2 + phase + tls + variant + reserved +
+tls_pubkey_hash32 + challenge8 + TSRequest`. `op_credssp_process_windows_state` (`op16`)
 verarbeitet dieses Frame und prueft PubKeyAuth nicht mehr gegen eine rein
 statische Fixture, sondern gegen den im Frame uebergebenen TLS-Public-Key-
 Hash. `op_credssp_windows_harness` (`op17`) fuehrt einen kompletten
@@ -113,7 +113,7 @@ zum NTLMSSP-Header ausgewertet werden.
 
 Seit 0.55.31 besitzt R4AUTH den Live-CredSSP-Vertrag fuer einen vorhandenen
 R4TLS-Streamzustand. `op_credssp_live_contract` (`op18`) beschreibt das
-Frame `R4CL + phase + variant + flags + reserved + stream_len + R4LK +
+Frame `R4C2 + phase + variant + flags + reserved + stream_len + challenge8 + R4LK +
 TSRequest`. `op_credssp_process_live_state` (`op19`) verarbeitet echte
 TSRequest-Flights ueber diesem wiederaufnehmbaren Live-State. Der
 TLS-Kontext wird nicht als Textmarker uebergeben, sondern als `R4LK`-
@@ -121,7 +121,7 @@ Streamzustand aus R4TLS; R4AUTH entnimmt daraus den TLS-Public-Key-Hash fuer
 die CredSSP-PubKeyAuth-Bindung.
 
 `op_credssp_live_harness` (`op20`) fuehrt den Windows-nahen Negotiate-,
-Authenticate- und PubKeyAuth-Pfad ueber `R4CL`/`R4LK` aus und prueft stabile
+Authenticate- und PubKeyAuth-Pfad ueber `R4C2`/`R4LK` aus und prueft stabile
 Fehlerbilder fuer falsches Passwort, falsche PubKeyAuth, Kerberos,
 Domain-Anmeldung, kaputte TSRequests und fehlenden TLS-Stream. Damit ist die
 R4AUTH-Seite fuer die naechste RDPSVC-CredSSP-Live-Schleife vorbereitet,
@@ -140,3 +140,22 @@ Die naechsten Ausbaustufen gehoeren hierher:
 
 RDPSVC nutzt diese Logik als Konsument und bleibt frei von privaten
 CredSSP-/NTLM-/ASN.1-Implementierungen.
+
+
+Sitzungs-Challenge ab 0.78.61
+---------------------------
+Op21 erzeugt acht frische Challengebytes aus SDK secure_random.fill. Der
+Aufrufer besitzt sie genau fuer eine Verbindung, uebernimmt sie nie vom Peer
+und verwendet sie nicht erneut fuer einen neuen Anmeldeversuch. Fehlende
+Entropie liefert -27 mit Ausgabelaenge 0. Op12 verlangt exakt diese acht Bytes
+als Eingabe und baut daraus den Type2-TSRequest. Op12 ist keine feste Fixture.
+
+Die privaten Zustandshuellen enthalten dieselbe Challenge: R4S2 (16-Byte-
+Header; Challenge ab8), R4W2 (48-Byte-Header; Challenge ab40) und R4C2
+(20-Byte-Header; Challenge ab12, danach R4LK und TSRequest). Alte Kennungen
+werden abgewiesen. Type3 wird in allen drei Pfaden gegen die Challenge im
+zugehoerigen Zustand geprueft. Festwerte gehoeren nur zu ausdruecklichen
+Diagnose-Fixtures. SPNEGO-Huellen bleiben als solche klassifiziert; nur am
+Byte0 beginnendes NTLMSSP gilt als roher Token.
+Die vollstaendige CredSSP-Nachweis-/Phasenpruefung und konfigurierbare
+Anmeldegrundlage sind gesonderte Folgearbeit 0.78.62.
