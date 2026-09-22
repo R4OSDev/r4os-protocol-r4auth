@@ -4,13 +4,24 @@
 
 ## Package
 
-- Version: `0.1.3`
+- Version: `0.1.4`
 - Image target: `/R4OS/PROTOCOLS/R4AUTH.R4P`
 - Image scope: `slim`
 - Canonical project manifest: `module.R4MF`
 
 The manifest is the single source of truth for the artifact, imports, image
 target, and package metadata.
+
+Version 0.1.4 preserves the client's CredSSP token envelope: direct NTLM
+receives a direct NTLM challenge; SPNEGO receives NegTokenResp. Both paths
+use the same NTLM transcript, proof/MIC, TLS binding and credential checks.
+The existing protocol self-test exercises both challenge envelopes. This
+fixes FreeRDP's direct-NTLM negotiation without changing the R4C3 session ABI.
+The NTLMv2 parser also accepts bounded zero padding after the AV-list
+terminator, as sent by FreeRDP. NTProof and MIC still cover the complete
+received blob; nonzero trailing data is rejected. The self-test includes
+no-padding, four-byte and 24-byte padding cases.
+Reference: [MS-CSSP TSRequest](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/6aac4dea-08ef-47a6-8747-22ea7f6d8685).
 
 ## Build
 
@@ -97,3 +108,7 @@ Sitzung/Reihenfolge und Wiederholung; veroeffentlichter NTLM-Sealing-Vektor.
 Ein kurzer SMP4-QEMU-Lauf prueft echte TLS1.2/CredSSP-Pakete mit geaenderten
 lokalen Zugangsdaten und die Ablehnung des bisherigen Standardkennworts.
 Dies ist keine neue Windows-mstsc- oder vollstaendige RDP-Desktopabnahme.
+
+FreeRDP may repeat clientNonce in the final credentials message. The session
+accepts only the nonce already verified in TLS binding; a mismatch fails.
+The private state grows by 32 bytes; it remains opaque in the R4C3 envelope.

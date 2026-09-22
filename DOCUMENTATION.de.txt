@@ -5,7 +5,7 @@
 
 R4AUTH: verbindungseigene Anmeldung ab 0.78.62
 -------------------------------------------
-R4AUTH 0.1.3 besitzt den NTLMv2-/CredSSP-Ablauf. RDPSVC uebergibt seine
+R4AUTH 0.1.4 besitzt den NTLMv2-/CredSSP-Ablauf. RDPSVC uebergibt seine
 beim Dienststart geladene Registrykonfiguration. Das Modul kennt fuer den
 Produktpfad kein festes Kennwort. Unterstuetzt: Benutzername 1..31 druckbare
 ASCII-Bytes ohne Pfadtrenner, Kennwort 1..31 UTF-8-Bytes ohne NUL, leere oder
@@ -60,3 +60,15 @@ Sitzung/Reihenfolge und Wiederholung; veroeffentlichter NTLM-Sealing-Vektor.
 Ein kurzer SMP4-QEMU-Lauf prueft echte TLS1.2/CredSSP-Pakete mit geaenderten
 lokalen Zugangsdaten und die Ablehnung des bisherigen Standardkennworts.
 Dies ist keine neue Windows-mstsc- oder vollstaendige RDP-Desktopabnahme.
+
+0.80.32 / R4AUTH 0.1.4: Direkte NTLM- und SPNEGO-Huellen werden passend
+beantwortet. Der begrenzte NTLMv2-Parser akzeptiert Nullpadding nach MsvAvEOL;
+alle Bytes bleiben in NTProof/MIC einbezogen. Nichtnull-Anhaenge schlagen
+fehl. Die bestehende Selbstpruefung deckt beide Huellen und Padding ab.
+FreeRDP 3.15.0 liefert den unabhaengigen Token-/TLS-Bindungsnachweis.
+
+FreeRDP darf clientNonce im abschliessenden Credentialpaket wiederholen.
+R4AUTH akzeptiert nur die zuvor in der TLS-Bindung gepruefte Nonce; ein
+abweichender Wert scheitert. Der private opake Zustand waechst um32 Bytes;
+die R4C3-Huelle bleibt unveraendert. Der unabhaengige Hostlauf prueft den
+vollstaendigen FreeRDP-Ablauf und eine abweichende wiederholte Nonce.

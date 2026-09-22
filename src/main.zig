@@ -1428,6 +1428,7 @@ fn ntlmv2FixtureProfile() Ntlmv2Profile {
 }
 
 fn selftest(out_buffer: *r4os.abi.ProtocolBuffer) i32 {
+    if (!selftestSessionEnvelopes()) return -6;
     var spnego_resp: [96]u8 = .{0} ** 96;
     const ntlm_type2_fixture = [_]u8{ 'N', 'T', 'L', 'M', 'S', 'S', 'P', 0, 2, 0, 0, 0 };
     const spnego_len = buildSpnegoNegTokenRespBytes(spnego_resp[0..], ntlm_type2_fixture[0..], 1) orelse return -6;
@@ -2064,6 +2065,40 @@ const SessionEngine = @import("credssp_session.zig").Engine(struct {
 });
 const SessionError = @import("credssp_session.zig").Error;
 const PasswordCredentials = struct { domain: []const u8, user: []const u8, password: []const u8 };
+
+// The existing diagnostic exercises both productive challenge envelopes.
+// Each carries exactly the same NTLM transcript used by MIC verification.
+fn selftestSessionEnvelopes() bool {
+    var blob: [64]u8 = @splat(0);
+    blob[0] = 1; blob[1] = 1;
+    for ([_]usize{ 32, 36, 56 }) |bytes| {
+        if (SessionEngine.validateBlob(blob[0..bytes]) catch return false) return false;
+    }
+    blob[56] = 1;
+    if (SessionEngine.validateBlob(&blob)) |_| return false else |_| {}
+    var stream: [140]u8 = @splat(0x5a);
+    @memcpy(stream[0..4], "R4LK");
+    var type1: [40]u8 = @splat(0);
+    @memcpy(type1[0..8], "NTLMSSP\x00");
+    writeLe32(type1[8..12], 1);
+    writeLe32(type1[12..16], 0xe2088235);
+    var wrapped: [192]u8 = undefined;
+    const wrapped_len = buildSpnegoNegTokenInitBytes(&wrapped, &type1, &oid_ntlmssp) orelse return false;
+    for ([_]bool{ false, true }) |direct| {
+        var session = SessionEngine.Session.init("envelope", "fixture", &stream, "fixture public key") catch return false;
+        defer session.clear();
+        var request: [256]u8 = undefined;
+        const n = buildTsRequestBytesWithVersion(&request, if (direct) &type1 else wrapped[0..wrapped_len], 6) orelse return false;
+        var reply: [512]u8 = undefined;
+        const count = session.process(&stream, request[0..n], &reply) catch return false;
+        const parsed = parseTsRequestInfo(reply[0..count]) orelse return false;
+        if (parsed.version != 6 or parsed.nego_tokens != 1 or session.phase != 2 or
+            startsWith(parsed.nego_token, ntlmssp_signature) != direct) return false;
+        const token = unwrapSessionNtlmToken(parsed.nego_token) orelse return false;
+        if (!bytesEqual(token, session.type2[0..session.type2_len]) or readLe32(token[8..12]) != 2) return false;
+    }
+    return true;
+}
 
 fn parsePasswordCredentials(input: []const u8) ?PasswordCredentials {
     const outer = derElement(input) orelse return null;

@@ -87,6 +87,7 @@ pub fn Engine(comptime wire: type) type {
             reserved2: [2]u8 = .{ 0, 0 },
             challenge: [8]u8 = .{0} ** 8,
             tls_binding: [32]u8 = .{0} ** 32,
+            client_nonce: [32]u8 = .{0} ** 32,
             nt_hash: [16]u8 = .{0} ** 16,
             user: [32]u8 = .{0} ** 32,
             domain: [64]u8 = .{0} ** 64,
@@ -146,8 +147,15 @@ pub fn Engine(comptime wire: type) type {
                         @memcpy(self.type1[0..token.len], token);
                         self.type2_len = @intCast(self.buildChallenge());
                         var spnego: [320]u8 = undefined;
-                        const sn = wire.spnego(&spnego, self.type2[0..self.type2_len], 1) orelse return error.BufferSmall;
-                        const n = wire.tokenRequest(out, spnego[0..sn], self.credssp_version) orelse return error.BufferSmall;
+                        // MS-CSSP negoTokens can carry SPNEGO or direct NTLM.
+                        // Preserve the client's envelope; an NTLM SSPI peer
+                        // cannot consume a newly introduced NegTokenResp.
+                        const challenge = self.type2[0..self.type2_len];
+                        const reply = if (std.mem.startsWith(u8, request.nego_token, signature)) challenge else wrapped: {
+                            const sn = wire.spnego(&spnego, challenge, 1) orelse return error.BufferSmall;
+                            break :wrapped spnego[0..sn];
+                        };
+                        const n = wire.tokenRequest(out, reply, self.credssp_version) orelse return error.BufferSmall;
                         self.phase = @intFromEnum(Phase.authenticate);
                         return n;
                     },
@@ -156,11 +164,16 @@ pub fn Engine(comptime wire: type) type {
                         const token = wire.ntlmMessage(request.nego_token) orelse return error.BadToken;
                         try self.authenticate(token);
                         const n = try self.verifyBinding(request.pub_key_auth, request.client_nonce, out);
+                        if (self.credssp_version >= 5) @memcpy(&self.client_nonce, request.client_nonce);
                         self.phase = @intFromEnum(Phase.credentials);
                         return n;
                     },
                     @intFromEnum(Phase.credentials) => {
-                        if (request.version != self.credssp_version or !request.has_auth_info or request.nego_tokens != 0 or request.has_pub_key_auth or request.has_client_nonce) return error.BadState;
+                        if (request.version != self.credssp_version or !request.has_auth_info or request.nego_tokens != 0 or request.has_pub_key_auth) return error.BadState;
+                        // MS-CSSP leaves clientNonce optional in this message.
+                        // FreeRDP repeats it; it must match the verified binding.
+                        if (request.has_client_nonce and (self.credssp_version < 5 or
+                            !sameSecret(32, request.client_nonce, &self.client_nonce))) return error.BadBinding;
                         try self.verifyCredentials(request.auth_info);
                         self.clear();
                         self.phase = @intFromEnum(Phase.complete);
@@ -207,7 +220,7 @@ pub fn Engine(comptime wire: type) type {
                 const encrypted_key = try securityBuffer(token, 52, header);
                 if (!userMatches(user, self.user[0..self.user_len])) return error.BadPassword;
                 if (!localDomain(domain) or domain.len > self.domain.len) return error.Unsupported;
-                if (response.len < 16 + 36) return error.BadPassword;
+                if (response.len < 16 + 32) return error.BadPassword;
                 const proof = response[0..16];
                 const blob = response[16..];
                 const mic_required = try validateBlob(blob);
@@ -315,8 +328,8 @@ pub fn Engine(comptime wire: type) type {
             if (!std.unicode.utf8ValidateSlice(password) or std.mem.indexOfScalar(u8, password, 0) != null) return error.BadConfig;
         }
 
-        fn validateBlob(blob: []const u8) Error!bool {
-            if (blob.len < 36 or blob.len > max_token - 16 or blob[0] != 1 or blob[1] != 1 or
+        pub fn validateBlob(blob: []const u8) Error!bool {
+            if (blob.len < 32 or blob.len > max_token - 16 or blob[0] != 1 or blob[1] != 1 or
                 !std.mem.allEqual(u8, blob[2..8], 0) or !std.mem.allEqual(u8, blob[24..28], 0)) return error.BadToken;
             var pos: usize = 28;
             var mic = false;
@@ -327,7 +340,10 @@ pub fn Engine(comptime wire: type) type {
                 pos += 4;
                 if (len > blob.len - pos) return error.BadToken;
                 if (id == 0) {
-                    if (len != 0 or blob.len - pos != 4 or !std.mem.allEqual(u8, blob[pos..], 0)) return error.BadToken;
+                    // MsvAvEOL terminates the AV list. FreeRDP includes
+                    // additional zero padding; all received bytes remain
+                    // covered by NTProof and (when present) the MIC below.
+                    if (len != 0 or !std.mem.allEqual(u8, blob[pos..], 0)) return error.BadToken;
                     return mic;
                 }
                 if (id == 6) {
