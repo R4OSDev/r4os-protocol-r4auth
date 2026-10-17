@@ -4,7 +4,7 @@
 
 ## Package
 
-- Version: `0.1.4`
+- Version: `0.1.5`
 - Image target: `/R4OS/PROTOCOLS/R4AUTH.R4P`
 - Image scope: `slim`
 - Canonical project manifest: `module.R4MF`
