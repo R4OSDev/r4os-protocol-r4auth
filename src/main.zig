@@ -123,6 +123,7 @@ comptime {
 }
 
 export fn r4auth_init(api: *const r4os.r4dev.ProtocolApi) callconv(.c) i32 {
+    r4os.secure_random.bindProtocol(api);
     var ctx = r4os.r4dev.ProtocolContext.init(api);
     ctx.logInfo("R4AUTH.R4P init");
     _ = ctx.registerRole("security.credssp", .data, 0);
