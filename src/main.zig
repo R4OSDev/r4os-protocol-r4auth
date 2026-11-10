@@ -112,7 +112,7 @@ const spnego_kind_neg_token_resp: u8 = 2;
 const spnego_kind_raw_ntlm: u8 = 3;
 
 comptime {
-    asm (r4os.r4dev.protocolEntriesAsm("r4auth_init", "r4auth_shutdown", "r4auth_query", "r4auth_dispatch"));
+    if (!@import("builtin").is_test) asm (r4os.technical2.protocolEntriesAsm("r4auth_init", "r4auth_shutdown", "r4auth_query", "r4auth_dispatch"));
 }
 
 comptime {
@@ -122,16 +122,21 @@ comptime {
     if (!bytesEqual(md4_empty[0..], expected[0..])) @compileError("R4AUTH MD4 primitive failed known-vector check");
 }
 
-export fn r4auth_init(api: *const r4os.r4dev.ProtocolApi) callconv(.c) i32 {
-    r4os.secure_random.bindProtocol(api);
-    var ctx = r4os.r4dev.ProtocolContext.init(api);
-    ctx.logInfo("R4AUTH.R4P init");
-    _ = ctx.registerRole("security.credssp", .data, 0);
-    _ = ctx.setStatus(.active, "R4AUTH CredSSP state machine active");
-    return 0;
+export fn r4auth_init(api: *const r4os.r4dev.ProtocolApi2) callconv(.c) i32 {
+    var ctx = r4os.r4dev.ProtocolContext2.init(api);
+    if (!ctx.requires(.{ "register_role", "set_status" })) return r4os.abi.err_no_fn;
+    const registered = ctx.registerRole("security.credssp", .data, 0);
+    if (registered != 0) return registered;
+    ctx.bindEntropy();
+    var published = false;
+    defer if (!published) r4os.secure_random.Provider.bind(.{});
+    const result = ctx.setStatus(.active, "R4AUTH CredSSP state machine active");
+    published = result == 0;
+    return result;
 }
 
 export fn r4auth_shutdown() callconv(.c) i32 {
+    r4os.secure_random.Provider.bind(.{});
     return 0;
 }
 
@@ -1896,15 +1901,21 @@ fn rotl32(value: u32, comptime bits: u5) u32 {
 }
 
 fn inputBytes(buffer: *const r4os.abi.ProtocolBuffer) ?[]const u8 {
-    if (buffer.data == null) return null;
-    const ptr: [*]const u8 = @ptrCast(buffer.data.?);
-    return ptr[0..@intCast(buffer.len)];
+    const ptr = buffer.data orelse return null;
+    if (buffer.reserved != 0 or buffer.flags != 0 or buffer.len > buffer.capacity) return null;
+    const bytes = buffer.len;
+    if (@addWithOverflow(@intFromPtr(ptr), buffer.capacity)[1] != 0) return null;
+    if (bytes != 0) _ = r4os.native_protocol_view.admit(buffer, r4os.native_protocol_view.Policy.record(u8, .input, .prefix), .input) catch return null;
+    return @as([*]const u8, @ptrCast(ptr))[0..bytes];
 }
 
 fn outputBytes(buffer: *r4os.abi.ProtocolBuffer) ?[]u8 {
-    if (buffer.data == null) return null;
-    const ptr: [*]u8 = @ptrCast(buffer.data.?);
-    return ptr[0..@intCast(buffer.capacity)];
+    const ptr = buffer.data orelse return null;
+    if (buffer.reserved != 0 or buffer.flags != 0 or buffer.len > buffer.capacity) return null;
+    const bytes = buffer.capacity;
+    if (@addWithOverflow(@intFromPtr(ptr), buffer.capacity)[1] != 0) return null;
+    if (bytes != 0) _ = r4os.native_protocol_view.admit(buffer, r4os.native_protocol_view.Policy.record(u8, .output, .prefix), .output) catch return null;
+    return @as([*]u8, @ptrCast(ptr))[0..bytes];
 }
 
 fn writeOut(buffer: *r4os.abi.ProtocolBuffer, text: []const u8) i32 {
@@ -2008,31 +2019,33 @@ fn bytesEqual(a: []const u8, b: []const u8) bool {
 }
 
 fn readLe16(bytes: []const u8) u16 {
-    return @as(u16, bytes[0]) | (@as(u16, bytes[1]) << 8);
+    if (@inComptime()) return std.mem.readInt(u16, bytes[0..2], .little);
+    var reader = r4os.binary_cursor.Reader.init(bytes) catch unreachable;
+    return reader.readInt(u16, .little) catch unreachable;
 }
 
 fn readLe32(bytes: []const u8) u32 {
-    return @as(u32, bytes[0]) |
-        (@as(u32, bytes[1]) << 8) |
-        (@as(u32, bytes[2]) << 16) |
-        (@as(u32, bytes[3]) << 24);
+    if (@inComptime()) return std.mem.readInt(u32, bytes[0..4], .little);
+    var reader = r4os.binary_cursor.Reader.init(bytes) catch unreachable;
+    return reader.readInt(u32, .little) catch unreachable;
 }
 
 fn writeLe16(out: []u8, value: u16) void {
-    out[0] = @intCast(value & 0xFF);
-    out[1] = @intCast((value >> 8) & 0xFF);
+    if (@inComptime()) return std.mem.writeInt(u16, out[0..2], value, .little);
+    var writer = r4os.binary_cursor.Writer.init(out) catch unreachable;
+    writer.writeInt(u16, value, .little) catch unreachable;
 }
 
 fn writeLe32(out: []u8, value: u32) void {
-    out[0] = @intCast(value & 0xFF);
-    out[1] = @intCast((value >> 8) & 0xFF);
-    out[2] = @intCast((value >> 16) & 0xFF);
-    out[3] = @intCast((value >> 24) & 0xFF);
+    if (@inComptime()) return std.mem.writeInt(u32, out[0..4], value, .little);
+    var writer = r4os.binary_cursor.Writer.init(out) catch unreachable;
+    writer.writeInt(u32, value, .little) catch unreachable;
 }
 
 fn writeLe64(out: []u8, value: u64) void {
-    var i: usize = 0;
-    while (i < 8) : (i += 1) out[i] = @intCast((value >> @intCast(i * 8)) & 0xFF);
+    if (@inComptime()) return std.mem.writeInt(u64, out[0..8], value, .little);
+    var writer = r4os.binary_cursor.Writer.init(out) catch unreachable;
+    writer.writeInt(u64, value, .little) catch unreachable;
 }
 
 fn note(comptime text: []const u8) [64]u8 {
